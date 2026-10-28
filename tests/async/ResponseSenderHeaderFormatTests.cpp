@@ -18,6 +18,8 @@
 #include <gtest/gtest.h>
 #include <cstdint>
 
+#include "Async/Tx/ResponseSender.hpp"
+
 // =============================================================================
 // OHCI AT Header Format Tests (Standalone, no driver dependencies)
 // =============================================================================
@@ -349,4 +351,27 @@ TEST_F(ResponseSenderHeaderFormatTest, ReadBlockResponse_HasExpectedTCodeAndLeng
     EXPECT_EQ(TCODE_READ_BLOCK_RESPONSE, tCode);
     EXPECT_EQ(kRCodeComplete, rCode);
     EXPECT_EQ(kDataLength, dataLength);
+}
+
+// A response goes back at the speed its request arrived at (Linux ohci.c
+// handle_ar_packet, core-transaction.c). The speed is AR trailer bits 23:21,
+// that is xferStatus bits 7:5; the event code below it must not leak in.
+TEST(ResponseSpeed, FollowsTheRequestTrailer) {
+    using ASFW::Async::RequestSpeed;
+    EXPECT_EQ(RequestSpeed(0x0011), 0u);           // S100, evt_ack_complete
+    EXPECT_EQ(RequestSpeed(0x0020 | 0x0011), 1u);  // S200
+    EXPECT_EQ(RequestSpeed(0x0040 | 0x0011), 2u);  // S400
+    EXPECT_EQ(RequestSpeed(0x0060 | 0x001f), 3u);  // S800, event bits all set
+    EXPECT_EQ(RequestSpeed(0xff00), 0u);           // bits above the speed ignored
+}
+
+// Only a request our link answered with ack_pending waits for a response
+// (Linux core-transaction.c fw_send_response). The trailer event is ack + 16.
+TEST(ResponseSpeed, OnlyAckPendingRequestsGetAResponse) {
+    using ASFW::Async::ExpectsResponse;
+    EXPECT_TRUE(ExpectsResponse(0x8452));   // run|active|S400, ack_pending
+    EXPECT_TRUE(ExpectsResponse(0x0012));   // S100, ack_pending
+    EXPECT_FALSE(ExpectsResponse(0x8451));  // ack_complete: a unified transaction
+    EXPECT_FALSE(ExpectsResponse(0x8454));  // ack_busy_X
+    EXPECT_FALSE(ExpectsResponse(0x0000));  // no status
 }

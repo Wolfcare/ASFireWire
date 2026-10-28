@@ -18,6 +18,24 @@ namespace Bus { class GenerationTracker; }
 namespace Engine { class ContextManager; }
 namespace Tx { class Submitter; }
 
+/// The speed a request arrived at, from its AR trailer: xferStatus is the
+/// trailer's upper half, and the speed sits in trailer bits 23:21. A response
+/// goes back at that speed, as Linux sends it (ohci.c handle_ar_packet:
+/// p.speed = (status >> 21) & 0x7; core-transaction.c: request->response.speed
+/// = p->speed). A fixed S400 is never acknowledged by a node whose link runs
+/// slower, such as the MOTU UltraLite mk3 (link_spd S100).
+[[nodiscard]] constexpr uint8_t RequestSpeed(uint16_t xferStatus) noexcept {
+    return static_cast<uint8_t>((xferStatus >> 5) & 0x07);
+}
+
+/// Whether a received request waits for a response: our link acknowledged it
+/// with ack_pending. The AR trailer's event code is the ack plus 16
+/// (ohci.c handle_ar_packet: p.ack = evt - 16); ack_pending is 2, so 0x12.
+/// Linux responds only then (core-transaction.c fw_send_response).
+[[nodiscard]] constexpr bool ExpectsResponse(uint16_t xferStatus) noexcept {
+    return (xferStatus & 0x1f) == 0x12;
+}
+
 /// Utility to build and send Write Response (WrResp) packets for incoming AR requests.
 class ResponseSender {
 public:

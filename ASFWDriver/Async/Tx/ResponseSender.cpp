@@ -31,15 +31,14 @@ namespace ASFW::Async {
 namespace {
 
 constexpr uint8_t kSrcBusID = 0;
-constexpr uint8_t kSpeedS400 = 0x02;
 constexpr uint8_t kRetryX = 1;
 constexpr uint8_t kPriority = 0;
 constexpr std::size_t kLockResponseScratchSlots = 64;
 constexpr std::size_t kLockResponseScratchStride = 16;
 
-uint32_t BuildQ0(uint8_t tLabel, uint8_t tCode) {
+uint32_t BuildQ0(uint8_t tLabel, uint8_t tCode, uint8_t speed) {
     return (static_cast<uint32_t>(kSrcBusID & 0x01) << 23) |
-           (static_cast<uint32_t>(kSpeedS400 & 0x07) << 16) |
+           (static_cast<uint32_t>(speed & 0x07) << 16) |
            (static_cast<uint32_t>(tLabel & 0x3F) << 10) |
            (static_cast<uint32_t>(kRetryX) << 8) |
            (static_cast<uint32_t>(tCode & 0x0F) << 4) |
@@ -86,6 +85,18 @@ void ResponseSender::SendResponse(const ARPacketView& request,
     // Per IEEE 1394, broadcast requests (destID=0xFFFF) do not get responses.
     if (request.destID == 0xFFFF) {
         ASFW_LOG_V3(Async, "ResponseSender: skip response for broadcast destID=0xFFFF");
+        return;
+    }
+    // A request our link acknowledged with anything but ack_pending is already
+    // complete (a unified transaction): the requester expects no response, and
+    // an unexpected one goes unacknowledged (evt_missing_ack). Linux answers
+    // only ack_pending (core-transaction.c fw_send_response).
+    if (!ExpectsResponse(request.xferStatus)) {
+        static std::atomic<uint32_t> skipped{0};
+        if (skipped.fetch_add(1, std::memory_order_relaxed) < 4)
+            ASFW_LOG(Async, "ResponseSender: no response to a unified transaction tCode=0x%x src=0x%04x "
+                     "tLabel=%u xferStatus=0x%04x", request.tCode, request.sourceID, request.tLabel,
+                     request.xferStatus);
         return;
     }
 
@@ -141,7 +152,7 @@ void ResponseSender::SendWriteResponse(const ARPacketView& request, ResponseCode
     }
 
     uint32_t header[3]{};
-    header[0] = BuildQ0(static_cast<uint8_t>(request.tLabel & 0x3F), /*WrResp*/ 0x2);
+    header[0] = BuildQ0(static_cast<uint8_t>(request.tLabel & 0x3F), /*WrResp*/ 0x2, RequestSpeed(request.xferStatus));
     header[1] = BuildQ1(request.sourceID, rcode);
     header[2] = 0;
 
@@ -165,7 +176,7 @@ void ResponseSender::SendReadQuadletResponse(const ARPacketView& request,
     }
 
     uint32_t header[4]{};
-    header[0] = BuildQ0(static_cast<uint8_t>(request.tLabel & 0x3F), /*RdQuadResp*/ 0x6);
+    header[0] = BuildQ0(static_cast<uint8_t>(request.tLabel & 0x3F), /*RdQuadResp*/ 0x6, RequestSpeed(request.xferStatus));
     header[1] = BuildQ1(request.sourceID, rcode);
     header[2] = 0;
     header[3] = (rcode == ResponseCode::Complete) ? quadletData : 0;
@@ -191,7 +202,7 @@ void ResponseSender::SendReadBlockResponse(const ARPacketView& request,
     }
 
     uint32_t header[4]{};
-    header[0] = BuildQ0(static_cast<uint8_t>(request.tLabel & 0x3F), /*RdBlockResp*/ 0x7);
+    header[0] = BuildQ0(static_cast<uint8_t>(request.tLabel & 0x3F), /*RdBlockResp*/ 0x7, RequestSpeed(request.xferStatus));
     header[1] = BuildQ1(request.sourceID, rcode);
     header[2] = 0;
 
@@ -227,7 +238,7 @@ void ResponseSender::SendLockResponse(const ARPacketView& request,
 
     const uint16_t extTCode = ExtractExtendedTCode(request.header);
     uint32_t header[4]{};
-    header[0] = BuildQ0(static_cast<uint8_t>(request.tLabel & 0x3F), /*LockResp*/ 0xB);
+    header[0] = BuildQ0(static_cast<uint8_t>(request.tLabel & 0x3F), /*LockResp*/ 0xB, RequestSpeed(request.xferStatus));
     header[1] = BuildQ1(request.sourceID, rcode);
     header[2] = 0;
 
